@@ -8,6 +8,7 @@ Session as Context: Sessions integrated into L0/L1/L2 system.
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -186,44 +187,47 @@ class Session:
         """Load session data from storage."""
         if self._loaded:
             return
+        telemetry = get_current_telemetry()
+        with telemetry.measure("session.load"):
+            try:
+                with telemetry.measure("session.load.messages"):
+                    content = await self._viking_fs.read_file(
+                        f"{self._session_uri}/messages.jsonl", ctx=self.ctx
+                    )
+                self._messages = [
+                    Message.from_dict(json.loads(line))
+                    for line in content.strip().split("\n")
+                    if line.strip()
+                ]
+                logger.info(f"Session loaded: {self.session_id} ({len(self._messages)} messages)")
+            except (FileNotFoundError, Exception):
+                logger.debug(f"Session {self.session_id} not found, starting fresh")
 
-        try:
-            content = await self._viking_fs.read_file(
-                f"{self._session_uri}/messages.jsonl", ctx=self.ctx
-            )
-            self._messages = [
-                Message.from_dict(json.loads(line))
-                for line in content.strip().split("\n")
-                if line.strip()
-            ]
-            logger.info(f"Session loaded: {self.session_id} ({len(self._messages)} messages)")
-        except (FileNotFoundError, Exception):
-            logger.debug(f"Session {self.session_id} not found, starting fresh")
+            try:
+                with telemetry.measure("session.load.history"):
+                    history_items = await self._viking_fs.ls(
+                        f"{self._session_uri}/history", ctx=self.ctx
+                    )
+                archives = [
+                    item["name"] for item in history_items if item["name"].startswith("archive_")
+                ]
+                if archives:
+                    max_index = max(int(a.split("_")[1]) for a in archives)
+                    self._compression.compression_index = max_index
+                    self._stats.compression_count = len(archives)
+                    logger.debug(f"Restored compression_index: {max_index}")
+            except Exception:
+                pass
 
-        # Restore compression_index (scan history directory)
-        try:
-            history_items = await self._viking_fs.ls(f"{self._session_uri}/history", ctx=self.ctx)
-            archives = [
-                item["name"] for item in history_items if item["name"].startswith("archive_")
-            ]
-            if archives:
-                max_index = max(int(a.split("_")[1]) for a in archives)
-                self._compression.compression_index = max_index
-                self._stats.compression_count = len(archives)
-                logger.debug(f"Restored compression_index: {max_index}")
-        except Exception:
-            pass
-
-        # Load .meta.json
-        try:
-            meta_content = await self._viking_fs.read_file(
-                f"{self._session_uri}/.meta.json", ctx=self.ctx
-            )
-            self._meta = SessionMeta.from_dict(json.loads(meta_content))
-        except Exception:
-            # Old session without meta — derive from existing data
-            self._meta.message_count = len(self._messages)
-            self._meta.commit_count = self._compression.compression_index
+            try:
+                with telemetry.measure("session.load.meta"):
+                    meta_content = await self._viking_fs.read_file(
+                        f"{self._session_uri}/.meta.json", ctx=self.ctx
+                    )
+                self._meta = SessionMeta.from_dict(json.loads(meta_content))
+            except Exception:
+                self._meta.message_count = len(self._messages)
+                self._meta.commit_count = self._compression.compression_index
 
         self._loaded = True
 
@@ -258,7 +262,8 @@ class Session:
         """Sync wrapper for _save_meta()."""
         if not self._viking_fs:
             return
-        run_async(self._save_meta())
+        with get_current_telemetry().measure("session.message.meta"):
+            run_async(self._save_meta())
 
     @property
     def messages(self) -> List[Message]:
@@ -362,6 +367,7 @@ class Session:
         from openviking.service.task_tracker import get_task_tracker
         from openviking.storage.transaction import LockContext, get_lock_manager
         from openviking_cli.exceptions import FailedPreconditionError
+        telemetry = get_current_telemetry()
 
         # ===== Phase 1: Snapshot + clear (PathLock-protected) =====
         # Fast pre-check: skip lock entirely if no messages (common case avoids
@@ -386,7 +392,13 @@ class Session:
 
         # Use filesystem-based distributed lock so this works across workers/processes.
         session_path = self._viking_fs._uri_to_path(self._session_uri, ctx=self.ctx)
+        lock_wait_started = time.perf_counter()
         async with LockContext(get_lock_manager(), [session_path], lock_mode="point"):
+            telemetry.add_duration(
+                "session.commit.lock_wait",
+                (time.perf_counter() - lock_wait_started) * 1000,
+            )
+            lock_hold_started = time.perf_counter()
             # Authoritative check under lock: handles the race where two concurrent
             # callers both passed the pre-check but only the first should archive.
             if not self._messages:
@@ -404,12 +416,18 @@ class Session:
             self._messages.clear()
 
             try:
-                await self._write_to_agfs_async(messages=[])
+                with telemetry.measure("session.commit.write_live"):
+                    await self._write_to_agfs_async(messages=[])
             except Exception:
                 # Rollback: restore messages so they aren't lost
                 self._messages.extend(messages_to_archive)
                 self._compression.compression_index -= 1
                 raise
+            finally:
+                telemetry.add_duration(
+                    "session.commit.lock_hold",
+                    (time.perf_counter() - lock_hold_started) * 1000,
+                )
         # Lock released — live session is now clean.
         # Any add_message() from here appends to the fresh empty list.
 
@@ -419,14 +437,16 @@ class Session:
         )
         if self._viking_fs:
             lines = [m.to_jsonl() for m in messages_to_archive]
-            await self._viking_fs.write_file(
-                uri=f"{archive_uri}/messages.jsonl",
-                content="\n".join(lines) + "\n",
-                ctx=self.ctx,
-            )
+            with telemetry.measure("session.commit.write_archive"):
+                await self._viking_fs.write_file(
+                    uri=f"{archive_uri}/messages.jsonl",
+                    content="\n".join(lines) + "\n",
+                    ctx=self.ctx,
+                )
 
         self._meta.message_count = 0
-        await self._save_meta()
+        with telemetry.measure("session.commit.save_meta"):
+            await self._save_meta()
 
         self._compression.original_count += len(messages_to_archive)
         logger.info(
@@ -441,12 +461,13 @@ class Session:
 
         # Create TaskRecord for tracking Phase 2
         tracker = get_task_tracker()
-        task = tracker.create(
-            "session_commit",
-            resource_id=self.session_id,
-            owner_account_id=self.ctx.account_id,
-            owner_user_id=self.ctx.user.user_id,
-        )
+        with telemetry.measure("session.commit.create_task"):
+            task = tracker.create(
+                "session_commit",
+                resource_id=self.session_id,
+                owner_account_id=self.ctx.account_id,
+                owner_user_id=self.ctx.user.user_id,
+            )
 
         asyncio.create_task(
             self._run_memory_extraction(
@@ -492,7 +513,9 @@ class Session:
         redo_task_id: Optional[str] = None
 
         try:
-            if not await self._wait_for_previous_archive_done(archive_index):
+            with telemetry.measure("session.phase2.wait_previous"):
+                previous_done = await self._wait_for_previous_archive_done(archive_index)
+            if not previous_done:
                 await self._write_failed_marker(
                     archive_uri,
                     stage="waiting_previous_done",
@@ -514,27 +537,29 @@ class Session:
                 # redo-log protection
                 redo_task_id = str(uuid.uuid4())
                 redo_log = get_lock_manager().redo_log
-                redo_log.write_pending(
-                    redo_task_id,
-                    {
-                        "archive_uri": archive_uri,
-                        "session_uri": self._session_uri,
-                        "account_id": self.ctx.account_id,
-                        "user_id": self.ctx.user.user_id,
-                        "agent_id": self.ctx.user.agent_id,
-                        "role": self.ctx.role.value,
-                    },
-                )
+                with telemetry.measure("session.phase2.redo_log"):
+                    redo_log.write_pending(
+                        redo_task_id,
+                        {
+                            "archive_uri": archive_uri,
+                            "session_uri": self._session_uri,
+                            "account_id": self.ctx.account_id,
+                            "user_id": self.ctx.user.user_id,
+                            "agent_id": self.ctx.user.agent_id,
+                            "role": self.ctx.role.value,
+                        },
+                    )
 
                 latest_archive_overview = await self._get_latest_completed_archive_overview(
                     exclude_archive_uri=archive_uri
                 )
 
                 # Generate summary and write L0/L1 to archive
-                summary = await self._generate_archive_summary_async(
-                    messages,
-                    latest_archive_overview=latest_archive_overview,
-                )
+                with telemetry.measure("session.phase2.summary"):
+                    summary = await self._generate_archive_summary_async(
+                        messages,
+                        latest_archive_overview=latest_archive_overview,
+                    )
                 if self._viking_fs and summary:
                     abstract = self._extract_abstract_from_summary(summary)
                     await self._viking_fs.write_file(
@@ -563,13 +588,14 @@ class Session:
                     logger.info(
                         f"Starting memory extraction from {len(messages)} archived messages"
                     )
-                    extracted = await self._session_compressor.extract_long_term_memories(
-                        messages=messages,
-                        user=self.user,
-                        session_id=self.session_id,
-                        ctx=self.ctx,
-                        latest_archive_overview=latest_archive_overview,
-                    )
+                    with telemetry.measure("session.phase2.memory_extract"):
+                        extracted = await self._session_compressor.extract_long_term_memories(
+                            messages=messages,
+                            user=self.user,
+                            session_id=self.session_id,
+                            ctx=self.ctx,
+                            latest_archive_overview=latest_archive_overview,
+                        )
                     logger.info(f"Extracted {len(extracted)} memories")
                     for ctx_item in extracted:
                         cat = getattr(ctx_item, "category", "") or "unknown"
@@ -579,21 +605,26 @@ class Session:
 
                 # Write relations (using snapshot, not self._usage_records)
                 if self._viking_fs:
-                    for usage in usage_records:
-                        try:
-                            await self._viking_fs.link(self._session_uri, usage.uri, ctx=self.ctx)
-                        except Exception as e:
-                            logger.warning(f"Failed to create relation to {usage.uri}: {e}")
+                    with telemetry.measure("session.phase2.relations"):
+                        for usage in usage_records:
+                            try:
+                                await self._viking_fs.link(
+                                    self._session_uri, usage.uri, ctx=self.ctx
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to create relation to {usage.uri}: {e}")
 
-                redo_log.mark_done(redo_task_id)
+                with telemetry.measure("session.phase2.redo_log"):
+                    redo_log.mark_done(redo_task_id)
 
                 # Update active_count (using snapshot, not self._usage_records)
                 if self._vikingdb_manager:
                     uris = [u.uri for u in usage_records if u.uri]
                     try:
-                        active_count_updated = await self._vikingdb_manager.increment_active_count(
-                            self.ctx, uris
-                        )
+                        with telemetry.measure("session.phase2.active_count"):
+                            active_count_updated = (
+                                await self._vikingdb_manager.increment_active_count(self.ctx, uris)
+                            )
                     except Exception as e:
                         logger.debug(f"Could not update active_count for usage URIs: {e}")
                     if active_count_updated > 0:
@@ -603,14 +634,24 @@ class Session:
 
             # Phase 2 complete — update meta with telemetry and commit info
             snapshot = telemetry.finish("ok")
-            await self._merge_and_save_commit_meta(
-                archive_index=archive_index,
-                memories_extracted=memories_extracted,
-                telemetry_snapshot=snapshot,
-            )
+            with telemetry.measure("session.phase2.finalize_meta"):
+                await self._merge_and_save_commit_meta(
+                    archive_index=archive_index,
+                    memories_extracted=memories_extracted,
+                    telemetry_snapshot=snapshot,
+                )
 
             # Write .done file last — signals that all state is finalized
-            await self._write_done_file(archive_uri, first_message_id, last_message_id)
+            with telemetry.measure("session.phase2.done_write"):
+                await self._write_done_file(archive_uri, first_message_id, last_message_id)
+
+            snapshot = telemetry.finish("ok")
+            if snapshot is not None:
+                logger.info(
+                    "Telemetry summary (id=%s): %s",
+                    snapshot.telemetry_id,
+                    snapshot.summary,
+                )
 
             tracker.complete(
                 task_id,
@@ -1171,7 +1212,8 @@ class Session:
                         "latest_archive_overview": latest_archive_overview,
                     },
                 )
-                return await vlm.get_completion_async(prompt)
+                with get_current_telemetry().measure("session.phase2.vlm"):
+                    return await vlm.get_completion_async(prompt)
             except Exception as e:
                 logger.warning(f"LLM summary failed: {e}")
 
@@ -1283,13 +1325,14 @@ class Session:
         """Append to messages.jsonl."""
         if not self._viking_fs:
             return
-        run_async(
-            self._viking_fs.append_file(
-                f"{self._session_uri}/messages.jsonl",
-                msg.to_jsonl() + "\n",
-                ctx=self.ctx,
+        with get_current_telemetry().measure("session.message.append"):
+            run_async(
+                self._viking_fs.append_file(
+                    f"{self._session_uri}/messages.jsonl",
+                    msg.to_jsonl() + "\n",
+                    ctx=self.ctx,
+                )
             )
-        )
 
     def _update_message_in_jsonl(self) -> None:
         """Update message in messages.jsonl."""

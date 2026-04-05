@@ -151,7 +151,8 @@ class MemoryDeduplicator:
 
         # Generate embedding for candidate
         query_text = f"{candidate.abstract} {candidate.content}"
-        embed_result: EmbedResult = self.embedder.embed(query_text, is_query=True)
+        with telemetry.measure("session.phase2.embedding"):
+            embed_result: EmbedResult = self.embedder.embed(query_text, is_query=True)
         query_vector = embed_result.dense_vector
 
         category_uri_prefix = self._category_uri_prefix(candidate.category.value, candidate.user)
@@ -173,13 +174,14 @@ class MemoryDeduplicator:
 
         try:
             # Search with memory-scope filter.
-            results = await self.vikingdb.search_similar_memories(
-                owner_space=owner_space,
-                category_uri_prefix=category_uri_prefix,
-                query_vector=query_vector,
-                limit=5,
-                ctx=ctx,
-            )
+            with telemetry.measure("session.phase2.vector_db"):
+                results = await self.vikingdb.search_similar_memories(
+                    owner_space=owner_space,
+                    category_uri_prefix=category_uri_prefix,
+                    query_vector=query_vector,
+                    limit=5,
+                    ctx=ctx,
+                )
             telemetry.count("vector.searches", 1)
             telemetry.count("vector.scored", len(results))
             telemetry.count("vector.scanned", len(results))

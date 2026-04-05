@@ -169,6 +169,77 @@ def test_operation_telemetry_summary_includes_search_stage_durations():
     }
 
 
+def test_operation_telemetry_summary_includes_session_stage_durations():
+    from openviking.telemetry.operation import OperationTelemetry
+
+    telemetry = OperationTelemetry(operation="session.commit", enabled=True)
+    telemetry.set("session.load.duration_ms", 12.0)
+    telemetry.set("session.load.messages.duration_ms", 4.0)
+    telemetry.set("session.load.history.duration_ms", 3.0)
+    telemetry.set("session.load.meta.duration_ms", 2.0)
+    telemetry.set("session.directory_init.duration_ms", 40.0)
+    telemetry.set("session.directory_init.user_dirs.duration_ms", 18.0)
+    telemetry.set("session.directory_init.agent_dirs.duration_ms", 22.0)
+    telemetry.set("session.directory_init.agfs.duration_ms", 14.0)
+    telemetry.set("session.directory_init.vector_db.duration_ms", 7.0)
+    telemetry.set("session.directory_init.embedding.duration_ms", 5.0)
+    telemetry.set("session.ensure_exists.duration_ms", 6.0)
+    telemetry.set("session.message.append.duration_ms", 11.0)
+    telemetry.set("session.message.meta.duration_ms", 9.0)
+    telemetry.set("session.commit.lock_wait.duration_ms", 21.0)
+    telemetry.set("session.commit.lock_hold.duration_ms", 33.0)
+    telemetry.set("session.commit.write_live.duration_ms", 12.0)
+    telemetry.set("session.commit.write_archive.duration_ms", 17.0)
+    telemetry.set("session.commit.save_meta.duration_ms", 8.0)
+    telemetry.set("session.commit.create_task.duration_ms", 1.0)
+    telemetry.set("session.phase2.wait_previous.duration_ms", 2.0)
+    telemetry.set("session.phase2.redo_log.duration_ms", 1.5)
+    telemetry.set("session.phase2.summary.duration_ms", 120.0)
+    telemetry.set("session.phase2.vlm.duration_ms", 95.0)
+    telemetry.set("session.phase2.memory_extract.duration_ms", 260.0)
+    telemetry.set("session.phase2.relations.duration_ms", 6.0)
+    telemetry.set("session.phase2.active_count.duration_ms", 4.0)
+    telemetry.set("session.phase2.finalize_meta.duration_ms", 7.0)
+    telemetry.set("session.phase2.done_write.duration_ms", 3.0)
+    telemetry.set("session.phase2.embedding.duration_ms", 54.0)
+    telemetry.set("session.phase2.vector_db.duration_ms", 31.0)
+
+    summary = telemetry.finish().summary
+
+    assert summary["session"] == {
+        "load_ms": 12.0,
+        "load_messages_ms": 4.0,
+        "load_history_ms": 3.0,
+        "load_meta_ms": 2.0,
+        "directory_init_ms": 40.0,
+        "directory_init_user_dirs_ms": 18.0,
+        "directory_init_agent_dirs_ms": 22.0,
+        "directory_init_agfs_ms": 14.0,
+        "directory_init_vector_db_ms": 7.0,
+        "directory_init_embedding_ms": 5.0,
+        "ensure_exists_ms": 6.0,
+        "message_append_ms": 11.0,
+        "message_meta_ms": 9.0,
+        "commit_lock_wait_ms": 21.0,
+        "commit_lock_hold_ms": 33.0,
+        "commit_write_live_ms": 12.0,
+        "commit_write_archive_ms": 17.0,
+        "commit_save_meta_ms": 8.0,
+        "commit_create_task_ms": 1.0,
+        "phase2_wait_previous_ms": 2.0,
+        "phase2_redo_log_ms": 1.5,
+        "phase2_summary_ms": 120.0,
+        "phase2_vlm_ms": 95.0,
+        "phase2_memory_extract_ms": 260.0,
+        "phase2_relations_ms": 6.0,
+        "phase2_active_count_ms": 4.0,
+        "phase2_finalize_meta_ms": 7.0,
+        "phase2_done_write_ms": 3.0,
+        "phase2_embedding_ms": 54.0,
+        "phase2_vector_db_ms": 31.0,
+    }
+
+
 @pytest.mark.asyncio
 async def test_run_with_telemetry_returns_usage_and_payload():
     from openviking.telemetry.execution import run_with_telemetry

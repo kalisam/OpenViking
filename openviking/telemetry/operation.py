@@ -62,6 +62,38 @@ class TelemetrySummaryBuilder:
         "summarize": "resource.flags.summarize",
         "watch_enabled": "resource.flags.watch_enabled",
     }
+    _SESSION_STAGE_KEYS = {
+        "load_ms": "session.load.duration_ms",
+        "load_messages_ms": "session.load.messages.duration_ms",
+        "load_history_ms": "session.load.history.duration_ms",
+        "load_meta_ms": "session.load.meta.duration_ms",
+        "directory_init_ms": "session.directory_init.duration_ms",
+        "directory_init_user_dirs_ms": "session.directory_init.user_dirs.duration_ms",
+        "directory_init_agent_dirs_ms": "session.directory_init.agent_dirs.duration_ms",
+        "directory_init_agfs_ms": "session.directory_init.agfs.duration_ms",
+        "directory_init_vector_db_ms": "session.directory_init.vector_db.duration_ms",
+        "directory_init_embedding_ms": "session.directory_init.embedding.duration_ms",
+        "ensure_exists_ms": "session.ensure_exists.duration_ms",
+        "message_append_ms": "session.message.append.duration_ms",
+        "message_meta_ms": "session.message.meta.duration_ms",
+        "commit_lock_wait_ms": "session.commit.lock_wait.duration_ms",
+        "commit_lock_hold_ms": "session.commit.lock_hold.duration_ms",
+        "commit_write_live_ms": "session.commit.write_live.duration_ms",
+        "commit_write_archive_ms": "session.commit.write_archive.duration_ms",
+        "commit_save_meta_ms": "session.commit.save_meta.duration_ms",
+        "commit_create_task_ms": "session.commit.create_task.duration_ms",
+        "phase2_wait_previous_ms": "session.phase2.wait_previous.duration_ms",
+        "phase2_redo_log_ms": "session.phase2.redo_log.duration_ms",
+        "phase2_summary_ms": "session.phase2.summary.duration_ms",
+        "phase2_vlm_ms": "session.phase2.vlm.duration_ms",
+        "phase2_memory_extract_ms": "session.phase2.memory_extract.duration_ms",
+        "phase2_relations_ms": "session.phase2.relations.duration_ms",
+        "phase2_active_count_ms": "session.phase2.active_count.duration_ms",
+        "phase2_finalize_meta_ms": "session.phase2.finalize_meta.duration_ms",
+        "phase2_done_write_ms": "session.phase2.done_write.duration_ms",
+        "phase2_embedding_ms": "session.phase2.embedding.duration_ms",
+        "phase2_vector_db_ms": "session.phase2.vector_db.duration_ms",
+    }
 
     @staticmethod
     def _i(value: Any, default: int = 0) -> int:
@@ -268,6 +300,12 @@ class TelemetrySummaryBuilder:
                 },
             }
 
+        if cls._has_metric_prefix("session", counters, gauges):
+            summary["session"] = {
+                key: cls._f(gauges.get(metric_key), 0.0)
+                for key, metric_key in cls._SESSION_STAGE_KEYS.items()
+            }
+
         if error_stage or error_code or error_message:
             summary["errors"] = {
                 "stage": error_stage,
@@ -283,6 +321,7 @@ class TelemetrySummaryBuilder:
             "memory",
             "resource",
             "search",
+            "session",
             "errors",
         ):
             if key not in summary:

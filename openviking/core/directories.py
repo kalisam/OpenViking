@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from openviking.core.context import Context, ContextType, Vectorize
 from openviking.server.identity import RequestContext
 from openviking.storage.queuefs.embedding_msg_converter import EmbeddingMsgConverter
+from openviking.telemetry import get_current_telemetry
 
 if TYPE_CHECKING:
     from openviking.storage import VikingDBManager
@@ -218,16 +219,18 @@ class DirectoryInitializer:
         from openviking_cli.utils.logger import get_logger
 
         logger = get_logger(__name__)
+        telemetry = get_current_telemetry()
         created = False
         agfs_created = False
         # 1. Ensure files exist in AGFS
-        if not await self._check_agfs_files_exist(uri, ctx=ctx):
-            logger.debug(f"[VikingFS] Creating directory: {uri} for scope {scope}")
-            await self._create_agfs_structure(uri, defn.abstract, defn.overview, ctx=ctx)
-            created = True
-            agfs_created = True
-        else:
-            logger.debug(f"[VikingFS] Directory {uri} already exists")
+        with telemetry.measure("session.directory_init.agfs"):
+            if not await self._check_agfs_files_exist(uri, ctx=ctx):
+                logger.debug(f"[VikingFS] Creating directory: {uri} for scope {scope}")
+                await self._create_agfs_structure(uri, defn.abstract, defn.overview, ctx=ctx)
+                created = True
+                agfs_created = True
+            else:
+                logger.debug(f"[VikingFS] Directory {uri} already exists")
 
         # 2. Seed directory L0/L1 vectors only during fresh initialization.
         owner_space = self._owner_space_for_scope(scope=scope, ctx=ctx)
@@ -254,12 +257,13 @@ class DirectoryInitializer:
             (0, defn.abstract),
             (1, defn.overview),
         ):
-            existing = await self.vikingdb.get_context_by_uri(
-                uri=uri,
-                level=level,
-                limit=1,
-                ctx=ctx,
-            )
+            with get_current_telemetry().measure("session.directory_init.vector_db"):
+                existing = await self.vikingdb.get_context_by_uri(
+                    uri=uri,
+                    level=level,
+                    limit=1,
+                    ctx=ctx,
+                )
             if existing:
                 continue
             context = Context(
@@ -276,7 +280,8 @@ class DirectoryInitializer:
             context.set_vectorize(Vectorize(text=vector_text))
             emb_msg = EmbeddingMsgConverter.from_context(context)
             if emb_msg:
-                await self.vikingdb.enqueue_embedding_msg(emb_msg)
+                with get_current_telemetry().measure("session.directory_init.embedding"):
+                    await self.vikingdb.enqueue_embedding_msg(emb_msg)
 
     @staticmethod
     def _owner_space_for_scope(scope: str, ctx: RequestContext) -> str:

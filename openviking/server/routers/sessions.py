@@ -15,7 +15,7 @@ from openviking.server.dependencies import get_service
 from openviking.server.identity import RequestContext
 from openviking.server.models import ErrorInfo, Response
 from openviking.server.telemetry import run_operation
-from openviking.telemetry import TelemetryRequest
+from openviking.telemetry import TelemetryRequest, get_current_telemetry
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 logger = logging.getLogger(__name__)
@@ -128,10 +128,15 @@ async def create_session(
     service = get_service()
 
     async def _create() -> Dict[str, Any]:
-        await service.initialize_user_directories(_ctx)
-        await service.initialize_agent_directories(_ctx)
+        telemetry = get_current_telemetry()
+        with telemetry.measure("session.directory_init"):
+            with telemetry.measure("session.directory_init.user_dirs"):
+                await service.initialize_user_directories(_ctx)
+            with telemetry.measure("session.directory_init.agent_dirs"):
+                await service.initialize_agent_directories(_ctx)
         session_id = request.session_id if request else None
-        session = await service.sessions.create(_ctx, session_id)
+        with telemetry.measure("session.ensure_exists"):
+            session = await service.sessions.create(_ctx, session_id)
         return {
             "session_id": session.session_id,
             "user": session.user.to_dict(),

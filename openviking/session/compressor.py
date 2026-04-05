@@ -482,9 +482,10 @@ class SessionCompressor:
                                             merged_text = (
                                                 f"{action.memory.abstract} {candidate.content}"
                                             )
-                                            merged_embed = self.deduplicator.embedder.embed(
-                                                merged_text
-                                            )
+                                            with telemetry.measure("session.phase2.embedding"):
+                                                merged_embed = self.deduplicator.embedder.embed(
+                                                    merged_text
+                                                )
                                             batch_memories.append(
                                                 (merged_embed.dense_vector, action.memory)
                                             )
