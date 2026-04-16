@@ -35,7 +35,12 @@ from openviking.resource.watch_storage import is_watch_task_control_uri
 from openviking.server.identity import RequestContext, Role
 from openviking.telemetry import get_current_telemetry
 from openviking.utils.time_utils import format_simplified, get_current_timestamp, parse_iso_datetime
-from openviking_cli.exceptions import FailedPreconditionError, InvalidArgumentError, NotFoundError
+from openviking_cli.exceptions import (
+    FailedPreconditionError,
+    InvalidArgumentError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.logger import get_logger
 from openviking_cli.utils.uri import VikingURI
@@ -282,14 +287,19 @@ class VikingFS:
 
         for part in parts:
             if part in {".", ".."}:
-                raise PermissionError(f"Unsafe URI traversal segment '{part}' in {normalized}")
+                raise PermissionDeniedError(
+                    f"Unsafe URI traversal segment '{part}' in {normalized}",
+                    resource=normalized,
+                )
             if "\\" in part:
-                raise PermissionError(
-                    f"Unsafe URI path separator '\\\\' in component '{part}' of {normalized}"
+                raise PermissionDeniedError(
+                    f"Unsafe URI path separator '\\\\' in component '{part}' of {normalized}",
+                    resource=normalized,
                 )
             if len(part) >= 2 and part[1] == ":" and part[0].isalpha():
-                raise PermissionError(
-                    f"Unsafe URI drive-prefixed component '{part}' in {normalized}"
+                raise PermissionDeniedError(
+                    f"Unsafe URI drive-prefixed component '{part}' in {normalized}",
+                    resource=normalized,
                 )
 
         return normalized, parts
@@ -298,14 +308,17 @@ class VikingFS:
         real_ctx = self._ctx_or_default(ctx)
         normalized_uri, _ = self._normalized_uri_parts(uri)
         if not self._is_accessible(normalized_uri, real_ctx):
-            raise PermissionError(f"Access denied for {uri}")
+            raise PermissionDeniedError(f"Access denied for {uri}", resource=normalized_uri)
 
     def _ensure_mutable_access(self, uri: str, ctx: Optional[RequestContext]) -> None:
         self._ensure_access(uri, ctx)
         real_ctx = self._ctx_or_default(ctx)
         normalized_uri, _ = self._normalized_uri_parts(uri)
         if real_ctx.role != Role.ROOT and normalized_uri.rstrip("/") == "viking://temp":
-            raise PermissionError("Temp root is read-only for non-root users")
+            raise PermissionDeniedError(
+                "Temp root is read-only for non-root users",
+                resource=normalized_uri,
+            )
 
     # ========== AGFS Basic Commands ==========
 

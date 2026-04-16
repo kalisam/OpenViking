@@ -166,6 +166,23 @@ def test_openviking_config_rejects_unknown_top_level_section_with_suggestion(mon
     OpenVikingConfigSingleton.reset_instance()
 
 
+def test_openviking_config_warns_when_agent_scope_mode_is_configured(monkeypatch, caplog):
+    monkeypatch.setenv("OPENVIKING_CONFIG_FILE", "/tmp/codex-no-config.json")
+
+    from openviking_cli.utils.config.open_viking_config import (
+        OpenVikingConfig,
+        OpenVikingConfigSingleton,
+    )
+
+    with caplog.at_level("WARNING"):
+        config = OpenVikingConfig.from_dict({"memory": {"agent_scope_mode": "agent"}})
+
+    assert config.memory.agent_scope_mode == "agent"
+    assert "memory.agent_scope_mode is deprecated and ignored" in caplog.text
+
+    OpenVikingConfigSingleton.reset_instance()
+
+
 def test_openviking_config_singleton_preserves_value_error_for_bad_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENVIKING_CONFIG_FILE", "/tmp/codex-no-config.json")
 
@@ -220,7 +237,9 @@ def test_openviking_config_singleton_missing_message_uses_openviking_ai_docs(tmp
         OpenVikingConfigSingleton.reset_instance()
 
 
-def test_openviking_config_singleton_initialize_missing_message_uses_openviking_ai_docs(tmp_path, monkeypatch):
+def test_openviking_config_singleton_initialize_missing_message_uses_openviking_ai_docs(
+    tmp_path, monkeypatch
+):
     import openviking_cli.utils.config.open_viking_config as config_module
     from openviking_cli.utils.config.open_viking_config import OpenVikingConfigSingleton
 

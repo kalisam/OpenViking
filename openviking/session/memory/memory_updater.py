@@ -341,8 +341,8 @@ class MemoryUpdater:
                         if schema.overview_template and schema.directory:
                             env = jinja2.Environment(autoescape=False)
                             base_dir = env.from_string(schema.directory).render(
-                                user_space=ctx.user.user_space_name(),
-                                agent_space=ctx.user.agent_space_name(),
+                                user_space=user_space,
+                                agent_space=agent_space,
                             )
                             # Check if this uri belongs to this memory type's directory
                             if dir_path.startswith(base_dir.rstrip("/")):
