@@ -61,7 +61,7 @@ class PackService:
             file_path: Local .ovpack file path
             parent: Target parent URI (e.g., viking://user/alice/resources/references/)
             force: Whether to force overwrite existing resources
-            vectorize: Compatibility flag retained for API stability
+            vectorize: Whether to trigger vectorization
 
         Returns:
             Imported root resource URI

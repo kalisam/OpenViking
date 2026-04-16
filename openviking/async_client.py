@@ -555,9 +555,7 @@ class AsyncOpenViking:
             file_path: Local .ovpack file path
             parent: Target parent URI (e.g., viking://user/alice/resources/references/)
             force: Whether to force overwrite existing resources (default: False)
-            vectorize: Compatibility flag retained for API stability. Import
-                always enqueues semantic regeneration after successful file
-                import when non-derived files were imported.
+            vectorize: Whether to trigger vectorization (default: True)
 
         Returns:
             Imported root resource URI
